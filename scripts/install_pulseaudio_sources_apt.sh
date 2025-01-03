@@ -61,7 +61,8 @@ if [ ! -d "$PULSE_DIR" ]; then
         Ubuntu)
             # Enable the universe repository. Don't use add-apt-repository
             # as this has a huge number of dependencies.
-            if ! grep -q '^ *[^#].* universe *' /etc/apt/sources.list; then
+            if [ -f /etc/apt/sources.list ] && \
+                ! grep -q '^ *[^#].* universe *' /etc/apt/sources.list; then
                 echo "- Adding 'universe' repository" >&2
                 cp /etc/apt/sources.list /tmp/sources.list
                 while read type url suite rest; do
@@ -86,26 +87,43 @@ if [ ! -d "$PULSE_DIR" ]; then
     # option (--suite=jammy).
     echo "- Adding source repositories" >&2
     SRCLIST=$(find /etc/apt/ /etc/apt/sources.list.d -maxdepth 1 -type f -name '*.list')
-    for srclst in $SRCLIST; do
-        while read type url suite rest; do
-            case "$suite" in
-                $codename | $codename-updates | $codename-security)
-                    if [ "$type" = deb ]; then
-                        echo "deb $url $suite $rest"
-                        echo "deb-src $url $suite $rest"
-                    fi
-                    ;;
-            esac
-        done <$srclst
-    done >/tmp/combined_sources.list
+    if [ -n "$SRCLIST" ]; then
+        # Older-style .list files have been detected
 
-    sudo rm $SRCLIST ;# Remove source respositories
+        # Create a combined file for all .list sources, adding deb-src
+        # directives.
+        for srclst in $SRCLIST; do
+            while read type url suite rest; do
+                case "$suite" in
+                    $codename | $codename-updates | $codename-security)
+                        if [ "$type" = deb ]; then
+                            echo "deb $url $suite $rest"
+                            echo "deb-src $url $suite $rest"
+                        fi
+                        ;;
+                esac
+            done <$srclst
+        done >/tmp/combined_sources.list
 
-    # remove duplicates from the combined source.list in order to prevent
-    # apt warnings/errors; this is useful in cases where the user has
-    # already configured source code repositories.
-    sort -u < /tmp/combined_sources.list | \
-        sudo tee /etc/apt/sources.list > /dev/null
+        sudo rm $SRCLIST ;# Remove source respositories
+
+        # remove duplicates from the combined sources.list in order to prevent
+        # apt warnings/errors; this is useful in cases where the user has
+        # already configured source code repositories.
+        sort -u < /tmp/combined_sources.list | \
+            sudo tee /etc/apt/sources.list > /dev/null
+    fi
+
+    # Cater for DEB822 .sources files. These can appear alongside the
+    # older format.
+    for src in $(find /etc/apt/sources.list.d -maxdepth 1 -type f -name '*.sources'); do
+        # If we can find a match for the codename in the file, enable
+        # sources for all elements of the file. We assume that different
+        # codenames will be assigned to different files
+        if grep -iq "^suites:.* $codename" $src; then
+            sudo sed -i 's/^Types: deb/Types: deb deb-src/' "$src"
+        fi
+    done
 
     sudo apt-get update
 
