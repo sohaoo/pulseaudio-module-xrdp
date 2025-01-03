@@ -117,7 +117,12 @@ if [ ! -d "$PULSE_DIR" ]; then
     # Cater for DEB822 .sources files. These can appear alongside the
     # older format.
     for src in $(find /etc/apt/sources.list.d -maxdepth 1 -type f -name '*.sources'); do
-        sudo sed -i 's/^Types: deb/Types: deb deb-src/' "$src"
+        # If we can find a match for the codename in the file, enable
+        # sources for all elements of the file. We assume that different
+        # codenames will be assigned to different files
+        if grep -iq "^suites:.* $codename" $src; then
+            sudo sed -i 's/^Types: deb/Types: deb deb-src/' "$src"
+        fi
     done
 
     sudo apt-get update
