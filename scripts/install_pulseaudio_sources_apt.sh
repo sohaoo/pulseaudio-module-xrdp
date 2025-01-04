@@ -61,7 +61,8 @@ if [ ! -d "$PULSE_DIR" ]; then
         Ubuntu)
             # Enable the universe repository. Don't use add-apt-repository
             # as this has a huge number of dependencies.
-            if ! grep -q '^ *[^#].* universe *' /etc/apt/sources.list; then
+            if [ -f /etc/apt/sources.list ] && \
+                ! grep -q '^ *[^#].* universe *' /etc/apt/sources.list; then
                 echo "- Adding 'universe' repository" >&2
                 cp /etc/apt/sources.list /tmp/sources.list
                 while read type url suite rest; do
@@ -79,30 +80,80 @@ if [ ! -d "$PULSE_DIR" ]; then
             ;;
     esac
 
-    # Make sure sources are available
-    if ! grep -q '^ *deb-src' /etc/apt/sources.list; then
-        echo "- Adding source repositories" >&2
-        cp /etc/apt/sources.list /tmp/sources.list
-        while read type url suite rest; do
-            if [ "$type" = deb ]; then
+    # Scan the source repositories. Add sources for all repositories
+    # in this suite.
+    # Ignore other suites. This is needed when running the wrapper in a
+    # derivative-distro (like Linux Mint 21.2 'victoria') with --suite
+    # option (--suite=jammy).
+    echo "- Adding source repositories" >&2
+    SRCLIST=$(find /etc/apt/ /etc/apt/sources.list.d -maxdepth 1 -type f -name '*.list')
+    if [ -n "$SRCLIST" ]; then
+        # Older-style .list files have been detected
+
+        # Create a combined file for all .list sources, adding deb-src
+        # directives.
+        for srclst in $SRCLIST; do
+            while read type url suite rest; do
                 case "$suite" in
                     $codename | $codename-updates | $codename-security)
-                        echo "deb-src $url $suite $rest"
+                        if [ "$type" = deb ]; then
+                            echo "deb $url $suite $rest"
+                            echo "deb-src $url $suite $rest"
+                        fi
                         ;;
                 esac
-            fi
-        done </tmp/sources.list \
-             | sudo tee -a /etc/apt/sources.list >/dev/null
-        rm /tmp/sources.list
+            done <$srclst
+        done >/tmp/combined_sources.list
+
+        sudo rm $SRCLIST ;# Remove source respositories
+
+        # remove duplicates from the combined sources.list in order to prevent
+        # apt warnings/errors; this is useful in cases where the user has
+        # already configured source code repositories.
+        sort -u < /tmp/combined_sources.list | \
+            sudo tee /etc/apt/sources.list > /dev/null
     fi
 
+    # Cater for DEB822 .sources files. These can appear alongside the
+    # older format.
+    for src in $(find /etc/apt/sources.list.d -maxdepth 1 -type f -name '*.sources'); do
+        # If we can find a match for the codename in the file, enable
+        # sources for all elements of the file. We assume that different
+        # codenames will be assigned to different files
+        if grep -iq "^suites:.* $codename" $src; then
+            sudo sed -i 's/^Types: deb/Types: deb deb-src/' "$src"
+        fi
+    done
+
     sudo apt-get update
+
+    # For the CI build on 22.04, it was noted that an incompatible libunwind
+    # development package libunwind-14-dev was installed, which prevented
+    # installation of the default libunwind-dev package.
+    #
+    # Remove any libunwind-*-dev package
+    pkg_list=`dpkg-query -W -f '${Package} ' 'libunwind-*-dev' 2>/dev/null || :`
+    if [ -n "$pkg_list" ]; then
+        echo "- Removing package(s) $pkg_list"
+        sudo apt-get remove -y $pkg_list
+    fi
 
     sudo apt-get build-dep -y pulseaudio
     # Install any missing dependencies for this software release
     case "$RELEASE" in
         Ubuntu-16.04)
             sudo apt-get install -y libjson-c-dev
+            ;;
+        Kali-2022*)
+            sudo apt-get install -y doxygen
+            ;;
+        Debian-12)
+            # Debian testing build
+            case "$codename" in
+                bookworm)
+                    sudo apt-get install -y doxygen
+                    ;;
+            esac
             ;;
     esac
 

@@ -51,7 +51,11 @@ BUILDROOT=/var/lib/pa-build/$USER
 # Extra packages to install in the build root which the wrapped script
 # may be using. These are packages available by default when using
 # GitHub actions
-WRAPPED_SCRIPT_DEPS="sudo lsb-release"
+#
+# ca-certificates are needed to fetch updates over https
+#
+# This list is comma-separated
+WRAPPED_SCRIPT_DEPS="ca-certificates,sudo,lsb-release"
 
 # -----------------------------------------------------------------------------
 # S U I T E   E X I S T S
@@ -113,10 +117,12 @@ RunWrappedScript()
     # -d : Directory to switch to before running command
     schroot="schroot -c pa-build-$USER -d /build"
 
-    # Install extra dependencies
-    $schroot -u root -- apt-get install -y $WRAPPED_SCRIPT_DEPS
+    # Update the buildroot
+    $schroot -u root -- apt-get update
 
-    # Allow normal user to sudo without a password
+    # Allow normal user to sudo without a password. We may need to add the
+    # normal user, as it probably isn't created by debootstrap
+    $schroot -u root -- useradd -m $USER -u $(id -u) || :
     $schroot -u root -- \
         /bin/sh -c "echo '$USER ALL=(ALL) NOPASSWD:ALL'>/etc/sudoers.d/nopasswd-$USER"
     $schroot -u root -- chmod 400 /etc/sudoers.d/nopasswd-$USER
@@ -129,7 +135,7 @@ RunWrappedScript()
 # M A I N
 # -----------------------------------------------------------------------------
 debootstrap_mirror=""
-debootstrap_switches=""
+debootstrap_switches="--include=$WRAPPED_SCRIPT_DEPS"
 debootstrap_suite=""
 
 # Parse command line switches
@@ -213,12 +219,26 @@ echo "- Creating schroot config file $schroot_conf"
     echo "root-users=$USER"
     echo "users=$USER"
     echo "type=directory"
+    # Make sure we don't clobber /etc/passwd, /etc/group (etc) which
+    # have been created by debootstrap
+    echo "setup.nssdatabases="
 } | sudo tee $schroot_conf >/dev/null || exit $?
 
 # Copy some files to the build root
-for file in /etc/apt/sources.list; do
+for file in $(find /etc/apt/ /etc/apt/sources.list.d/ /etc/apt/mirrors/ \
+    -maxdepth 1 \
+    -type f \( -name '*.list' -o -name '*.sources' \) ); do
     echo "- Copying $file to the root"
-    sudo install -m 0644 $file $BUILDROOT/$file || exit $?
+    sudo install -Dm 0644 $file $BUILDROOT/$file || exit $?
+done
+
+for file in $(find /etc/apt/trusted.gpg.d/ \
+    -maxdepth 1 \
+    -type f -name '*.gpg' ); do
+    if [ ! -f "$BUILDROOT/$file" ]; then
+        echo "- Copying $file to the root"
+        sudo install -Dm 0644 $file $BUILDROOT/$file || exit $?
+    fi
 done
 
 # Create a separate directory in $BUILDROOT to hold the build
