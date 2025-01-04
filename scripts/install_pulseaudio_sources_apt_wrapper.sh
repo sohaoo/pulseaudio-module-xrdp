@@ -122,7 +122,7 @@ RunWrappedScript()
 
     # Allow normal user to sudo without a password. We may need to add the
     # normal user, as it probably isn't created by debootstrap
-    $schroot -u root -- useradd -m $USER || :
+    $schroot -u root -- useradd -m $USER -u $(id -u) || :
     $schroot -u root -- \
         /bin/sh -c "echo '$USER ALL=(ALL) NOPASSWD:ALL'>/etc/sudoers.d/nopasswd-$USER"
     $schroot -u root -- chmod 400 /etc/sudoers.d/nopasswd-$USER
